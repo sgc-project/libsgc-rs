@@ -479,7 +479,7 @@ mod tests {
             vec![
                 (
                     ServerMessage::Advertise {
-                        available_resources: vec![Resource::Fbdev, Resource::Drm { card: 1 }],
+                        available_resources: vec![Resource::Fbdev, Resource::drm(1)],
                     },
                     None,
                 ),
@@ -899,7 +899,7 @@ mod tests {
     fn disconnect_emits_revoked_per_held_then_errors() {
         let controller = fake(
             b"sgc-test-disconnect",
-            vec![Resource::Fbdev, Resource::Drm { card: 0 }],
+            vec![Resource::Fbdev, Resource::drm(0)],
         );
         let (mut client, _) = SgcClient::connect_at(b"sgc-test-disconnect").expect("connect");
         let devnull = std::fs::File::open("/dev/null").expect("open /dev/null");
@@ -914,7 +914,7 @@ mod tests {
         assert!(client.pump(None).expect("grant fbdev").is_some());
         controller.send(
             ServerMessage::Grant {
-                resource: Resource::Drm { card: 0 },
+                resource: Resource::drm(0),
             },
             Some(devnull.as_raw_fd()),
         );
@@ -939,7 +939,7 @@ mod tests {
         }
         assert_eq!(revoked.len(), 2, "one Revoked per held resource");
         assert!(revoked.contains(&Resource::Fbdev));
-        assert!(revoked.contains(&Resource::Drm { card: 0 }));
+        assert!(revoked.contains(&Resource::drm(0)));
         assert!(client.held().is_empty(), "nothing held after disconnect");
     }
 }
