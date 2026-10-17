@@ -24,8 +24,8 @@ use std::{
 
 use sendfd::RecvWithFd;
 use simple_graphics_protocol::{
-    ClientRequest, DrmGrant, FRAME_HEADER_LEN, OverlayGeometry, Resource, ServerMessage,
-    deserialize, parse_frame_header, serialize_framed,
+    ClientRequest, CursorShape, DrmGrant, FRAME_HEADER_LEN, OverlayGeometry, Resource,
+    ServerMessage, deserialize, parse_frame_header, serialize_framed,
 };
 
 use crate::error::SgcError;
@@ -223,6 +223,16 @@ impl SgcClient {
     /// the session ends), so a client that is done with its plane returns it
     /// here and another client can have it — no reply comes back, the daemon
     /// frees it on receipt. Releasing something not held does nothing.
+    /// Ask the graphics controller to draw this shape as the pointer, or to hide
+    /// the pointer entirely (`visible: false`). Sent on change only.
+    ///
+    /// Best effort like the other small writes: the controller owns the cursor
+    /// and the position, so a lost shape change costs a wrong-shaped cursor
+    /// until the next one, not a broken session.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape, visible: bool) -> Result<(), SgcError> {
+        self.write_frame(&ClientRequest::CursorShape { shape, visible })
+    }
+
     /// Tell the daemon where this client's overlay is, or that it is hidden
     /// ([`OverlayGeometry::default()`]). Sent when the geometry is first known
     /// and whenever it changes, so the server can say which app is where
