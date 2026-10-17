@@ -24,8 +24,8 @@ use std::{
 
 use sendfd::RecvWithFd;
 use simple_graphics_protocol::{
-    ClientRequest, DrmGrant, FRAME_HEADER_LEN, Resource, ServerMessage, deserialize,
-    parse_frame_header, serialize_framed,
+    ClientRequest, DrmGrant, FRAME_HEADER_LEN, OverlayGeometry, Resource, ServerMessage,
+    deserialize, parse_frame_header, serialize_framed,
 };
 
 use crate::error::SgcError;
@@ -223,6 +223,22 @@ impl SgcClient {
     /// the session ends), so a client that is done with its plane returns it
     /// here and another client can have it — no reply comes back, the daemon
     /// frees it on receipt. Releasing something not held does nothing.
+    /// Tell the daemon where this client's overlay is, or that it is hidden
+    /// ([`OverlayGeometry::default()`]). Sent when the geometry is first known
+    /// and whenever it changes, so the server can say which app is where
+    /// without inferring it from a plane state that only reflects the last
+    /// commit.
+    pub fn report_overlay_geometry(
+        &mut self,
+        resource: &Resource,
+        geometry: OverlayGeometry,
+    ) -> Result<(), SgcError> {
+        self.write_frame(&ClientRequest::OverlayGeometry {
+            resource: resource.clone(),
+            geometry,
+        })
+    }
+
     pub fn release(&mut self, resource: Resource) -> Result<(), SgcError> {
         if self.held.remove(&resource).is_none() {
             return Ok(());
