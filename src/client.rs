@@ -24,8 +24,8 @@ use std::{
 
 use sendfd::RecvWithFd;
 use simple_graphics_protocol::{
-    ClientRequest, FRAME_HEADER_LEN, Resource, ServerMessage, deserialize, parse_frame_header,
-    serialize_framed,
+    ClientRequest, DrmGrant, FRAME_HEADER_LEN, Resource, ServerMessage, deserialize,
+    parse_frame_header, serialize_framed,
 };
 
 use crate::error::SgcError;
@@ -84,6 +84,11 @@ pub struct SgcClient {
     /// requests whenever it likes, so a reply is not necessarily the next
     /// frame. They are handed out by [`SgcClient::pump`] before the socket.
     pending: VecDeque<SgcEvent>,
+    /// Which DRM plane the server chose, per held DRM resource. A card's
+    /// primary role means "the display, and every plane its lease carries"; the
+    /// overlay role means one specific plane, named here — see
+    /// [`SgcClient::drm_grant`].
+    drm_grants: HashMap<Resource, DrmGrant>,
 }
 
 impl SgcClient {
@@ -117,6 +122,7 @@ impl SgcClient {
                         held: HashMap::new(),
                         fatal: None,
                         pending: VecDeque::new(),
+                        drm_grants: HashMap::new(),
                     },
                     available_resources,
                 ))
@@ -160,10 +166,19 @@ impl SgcClient {
             let (msg, fds) = read_framed(&mut self.stream)?;
 
             match msg {
-                ServerMessage::Grant { resource: granted } if granted == resource => {
+                ServerMessage::Grant {
+                    resource: granted,
+                    drm,
+                } if granted == resource => {
                     // Our answer. `handle_message` stores the canonical, acks it
                     // and lends the dup; the caller borrows with `fd()`.
-                    self.handle_message(ServerMessage::Grant { resource: granted }, fds)?;
+                    self.handle_message(
+                        ServerMessage::Grant {
+                            resource: granted,
+                            drm,
+                        },
+                        fds,
+                    )?;
                     return Ok(());
                 }
                 ServerMessage::Deny { reason } => {
@@ -190,6 +205,30 @@ impl SgcClient {
                 resource: resource.clone(),
             })
             .and_then(|fd| fd.try_clone().map_err(SgcError::Io))
+    }
+
+    /// Which plane the server granted for `resource`, if it is held and the
+    /// grant named one.
+    ///
+    /// A DRM card's primary role reports `None`: that grant is the pipeline
+    /// itself, and the client picks its plane from the lease (by the plane's
+    /// `type` property). The overlay role always reports the plane it was
+    /// granted, because "an overlay of this card" alone does not say which of
+    /// them is yours.
+    pub fn drm_grant(&self, resource: &Resource) -> Option<DrmGrant> {
+        self.drm_grants.get(resource).copied()
+    }
+
+    /// Give `resource` back. An overlay plane is owned until this is called (or
+    /// the session ends), so a client that is done with its plane returns it
+    /// here and another client can have it — no reply comes back, the daemon
+    /// frees it on receipt. Releasing something not held does nothing.
+    pub fn release(&mut self, resource: Resource) -> Result<(), SgcError> {
+        if self.held.remove(&resource).is_none() {
+            return Ok(());
+        }
+        self.drm_grants.remove(&resource);
+        self.write_frame(&ClientRequest::Release { resource })
     }
 
     /// The resources this session currently holds.
@@ -251,6 +290,7 @@ impl SgcClient {
             ServerMessage::Revoke { resource } => {
                 // Drop the canonical; the app drops its dup on Revoked.
                 self.held.remove(&resource);
+                self.drm_grants.remove(&resource);
                 close_fds(fds);
                 // Revoke-ack: Release doubles as the acknowledgment.
                 let _ = self.write_frame(&ClientRequest::Release {
@@ -258,7 +298,7 @@ impl SgcClient {
                 });
                 Ok(Some(SgcEvent::Revoked { resource }))
             }
-            ServerMessage::Grant { resource } => {
+            ServerMessage::Grant { resource, drm } => {
                 if fds.len() != 1 {
                     eprintln!("grant carried {} fds; ignoring", fds.len());
                     close_fds(fds);
@@ -269,6 +309,17 @@ impl SgcClient {
                 let _ = self.write_frame(&ClientRequest::Ack);
                 // Re-grant: store the canonical, lend a dup to the app.
                 self.held.insert(resource.clone(), fd);
+                match drm {
+                    // A DRM plane grant: which plane the server chose, so the
+                    // app knows what to program without guessing among the
+                    // planes its lease carries.
+                    Some(drm) => {
+                        self.drm_grants.insert(resource.clone(), drm);
+                    }
+                    None => {
+                        self.drm_grants.remove(&resource);
+                    }
+                }
                 match self.fd(&resource) {
                     Ok(fd) => Ok(Some(SgcEvent::Granted { resource, fd })),
                     Err(e) => {
@@ -419,6 +470,7 @@ fn close_fds(fds: Vec<RawFd>) {
 mod tests {
     use super::*;
     use sendfd::SendWithFd;
+    use simple_graphics_protocol::PlaneRole;
     use std::{
         io::{Read, Write},
         os::{
@@ -486,6 +538,7 @@ mod tests {
                 (
                     ServerMessage::Grant {
                         resource: Resource::Fbdev,
+                        drm: None,
                     },
                     Some(fd),
                 ),
@@ -633,6 +686,7 @@ mod tests {
             Some((
                 ServerMessage::Grant {
                     resource: Resource::Fbdev,
+                    drm: None,
                 },
                 Some(devnull.as_raw_fd()),
             )),
@@ -810,6 +864,7 @@ mod tests {
         controller.send(
             ServerMessage::Grant {
                 resource: Resource::Fbdev,
+                drm: None,
             },
             Some(devnull.as_raw_fd()),
         );
@@ -850,6 +905,7 @@ mod tests {
         controller.send(
             ServerMessage::Grant {
                 resource: Resource::Fbdev,
+                drm: None,
             },
             Some(devnull.as_raw_fd()),
         );
@@ -908,6 +964,7 @@ mod tests {
         controller.send(
             ServerMessage::Grant {
                 resource: Resource::Fbdev,
+                drm: None,
             },
             Some(devnull.as_raw_fd()),
         );
@@ -915,6 +972,7 @@ mod tests {
         controller.send(
             ServerMessage::Grant {
                 resource: Resource::drm(0),
+                drm: None,
             },
             Some(devnull.as_raw_fd()),
         );
@@ -941,5 +999,99 @@ mod tests {
         assert!(revoked.contains(&Resource::Fbdev));
         assert!(revoked.contains(&Resource::drm(0)));
         assert!(client.held().is_empty(), "nothing held after disconnect");
+    }
+
+    #[test]
+    fn an_overlay_grant_reports_the_plane_to_draw_on() {
+        let devnull = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let overlay = Resource::drm_overlay(0);
+        let granted = DrmGrant {
+            plane: PlaneRole::Overlay,
+            plane_id: 44,
+            crtc_id: 48,
+            connector_id: Some(50),
+        };
+        let (server, ready) = fake_server(
+            b"sgc-test-overlay-grant",
+            Some((
+                ServerMessage::Grant {
+                    resource: overlay.clone(),
+                    drm: Some(granted),
+                },
+                Some(devnull.as_raw_fd()),
+            )),
+        );
+        ready.recv().expect("server ready");
+        let (mut client, _) = SgcClient::connect_at(b"sgc-test-overlay-grant").expect("connect");
+
+        assert_eq!(client.drm_grant(&overlay), None, "nothing before the grant");
+        client.acquire(overlay.clone()).expect("grant");
+        assert_eq!(
+            client.drm_grant(&overlay),
+            Some(granted),
+            "the overlay grant names the plane to program"
+        );
+        // A primary grant is the pipeline itself: there is no plane to name,
+        // the client reads its own out of the lease.
+        assert_eq!(client.drm_grant(&Resource::drm(0)), None);
+
+        drop(client);
+        server.join().expect("server thread finished");
+    }
+
+    #[test]
+    fn a_revoked_grant_stops_reporting_its_plane() {
+        let devnull = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let overlay = Resource::drm_overlay(0);
+        let granted = DrmGrant {
+            plane: PlaneRole::Overlay,
+            plane_id: 34,
+            crtc_id: 48,
+            connector_id: None,
+        };
+        let controller = fake(b"sgc-test-grant-forget", vec![overlay.clone()]);
+        let (mut client, _) = SgcClient::connect_at(b"sgc-test-grant-forget").expect("connect");
+
+        controller.send(
+            ServerMessage::Grant {
+                resource: overlay.clone(),
+                drm: Some(granted),
+            },
+            Some(devnull.as_raw_fd()),
+        );
+        let event = client
+            .pump(Some(Duration::from_secs(1)))
+            .expect("pump")
+            .expect("a granted event");
+        assert!(matches!(event, SgcEvent::Granted { .. }), "got {event:?}");
+        assert_eq!(controller.next_request(), ClientRequest::Ack);
+        assert_eq!(client.drm_grant(&overlay), Some(granted));
+
+        controller.send(
+            ServerMessage::Revoke {
+                resource: overlay.clone(),
+            },
+            None,
+        );
+        let event = client
+            .pump(Some(Duration::from_secs(1)))
+            .expect("pump")
+            .expect("a revoked event");
+        assert!(matches!(event, SgcEvent::Revoked { .. }), "got {event:?}");
+        assert!(
+            matches!(
+                controller.next_request(),
+                ClientRequest::Release { resource } if resource == overlay
+            ),
+            "the revoke is acknowledged with a Release"
+        );
+        assert_eq!(
+            client.drm_grant(&overlay),
+            None,
+            "a plane this session no longer holds must not still be named"
+        );
+
+        drop(client);
+        drop(controller);
     }
 }

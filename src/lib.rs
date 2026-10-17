@@ -5,4 +5,4 @@ pub mod error;
 
 pub use client::{SgcClient, SgcEvent};
 pub use error::SgcError;
-pub use simple_graphics_protocol::{InputResource, PlaneRole, Resource};
+pub use simple_graphics_protocol::{DrmGrant, InputResource, PlaneRole, Resource};

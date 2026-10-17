@@ -26,3 +26,9 @@ thiserror = "1"
 # poll(2) for the pump's bounded wait (set_read_timeout cannot express
 # "poll once" / "block forever": SO_RCVTIMEO treats 0 as no timeout).
 libc = "0.2"
+
+[dev-dependencies]
+# The example drives a granted plane, which means a real DRM fd: the same crate
+# the daemon uses, so the plane ioctls in the example match the ones in the
+# server.
+drm = "0.15"
