@@ -57,6 +57,12 @@ pub enum SgcEvent {
     /// The protocol `Ack` was already sent by the library — no second `acquire`
     /// needed.
     Granted { resource: Resource, fd: OwnedFd },
+    /// Where the controller's pointer is, in display pixels, clamped to the
+    /// mode. Sent to the app on the display when it moves, and the app's only
+    /// correct source of pointer position: the controller is the one integrator,
+    /// so a client that used this cannot drift from the drawn cursor. An
+    /// application that sums device deltas itself will.
+    Pointer { x: i32, y: i32 },
     /// The server's list of available resources changed — a device was plugged
     /// in or removed. The app's initial view came from [`SgcClient::connect`];
     /// this is the update, and it is the only way a connection that is already
@@ -313,6 +319,7 @@ impl SgcClient {
         fds: Vec<RawFd>,
     ) -> Result<Option<SgcEvent>, SgcError> {
         match msg {
+            ServerMessage::Pointer { x, y } => Ok(Some(SgcEvent::Pointer { x, y })),
             ServerMessage::Revoke { resource } => {
                 // Drop the canonical; the app drops its dup on Revoked.
                 self.held.remove(&resource);

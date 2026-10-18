@@ -85,6 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{resource:?} on fd {}", fd.as_raw_fd());
             }
             Ok(Some(SgcEvent::Revoked { resource })) => println!("lost {resource:?}"),
+            // The controller draws the cursor, so it is the one integrator of
+            // pointer motion: where it says the pointer is, it is.
+            Ok(Some(SgcEvent::Pointer { x, y })) => println!("pointer at {x},{y}"),
             Ok(Some(SgcEvent::Advertised { available_resources })) => {
                 println!("the daemon now offers {available_resources:?}");
             }
